@@ -1,0 +1,113 @@
+c#!/usr/bin/env python3
+"""
+Simple Mininet topology for DDoS testing with P4 switch
+"""
+
+from mininet.topo import Topo
+from mininet.net import Mininet
+from mininet.cli import CLI
+from mininet.log import setLogLevel, info
+from mininet.node import Switch
+import subprocess
+import os
+import time
+
+class P4Switch(Switch):
+    """P4 switch using BMv2"""
+    
+    def __init__(self, name, **kwargs):
+        Switch.__init__(self, name, **kwargs)
+        self.sw_path = '/usr/local/bin/simple_switch'
+        self.json_path = kwargs.get('json_path', 'p4/bmv2.json')
+        self.thrift_port = kwargs.get('thrift_port', 9090)
+        self.device_id = kwargs.get('device_id', 0)
+    
+    def start(self, controllers):
+        """Start BMv2 switch"""
+        cmd = (f"{self.sw_path} "
+               f"--device-id {self.device_id} "
+               f"--thrift-port {self.thrift_port} "
+               f"--log-console "
+               f"-i 1@{self.name}-eth1 "
+               f"-i 2@{self.name}-eth2 "
+               f"-i 3@{self.name}-eth3 "
+               f"-i 4@{self.name}-eth4 "
+ 
+
+
+killall
+
+
+
+un.sh
+ zxcdsagwrgfgyety
+
+tititihm-server              f"{self.json_path} "
+               f"> /tmp/{self.name}.log 2>&1 &")
+        
+        info(f"Starting P4 switch: {self.name}\n")
+        self.cmd(cmd)
+        time.sleep(2)  # Give switch time to start
+    
+    def stop(self):
+        """Stop BMv2 switch"""
+        self.cmd(f"kill %{self.sw_path}")
+        self.cmd(f"pkill -f {self.sw_path}")
+
+class DDoSTopo(Topo):
+    """Topology for DDoS testing"""
+    
+    def build(self):
+        # Add P4 switch
+        s1 = self.addSwitch('s1', cls=P4Switch, device_id=0, thrift_port=9090)
+        
+        # Add hosts (attackers and victim)
+        attacker1 = self.addHost('attacker1', ip='10.0.0.1/24')
+        attacker2 = self.addHost('attacker2', ip='10.0.0.2/24')
+        normal = self.addHost('normal', ip='10.0.0.3/24')
+        victim = self.addHost('victim', ip='10.0.0.100/24')
+        
+        # Connect hosts to switch
+        self.addLink(attacker1, s1, port1=1, port2=1)
+        self.addLink(attacker2, s1, port1=1, port2=2)
+        self.addLink(normal, s1, port1=1, port2=3)
+        self.addLink(victim, s1, port1=1, port2=4)
+
+def run():
+    """Run the Mininet network"""
+    topo = DDoSTopo()
+    net = Mininet(topo=topo, controller=None)
+    
+    info("\n" + "="*60 + "\n")
+    info("        DDoS Detection Test Network Ready!\n")
+    info("="*60 + "\n\n")
+    
+    info("📡 Hosts:\n")
+    info("   attacker1 : 10.0.0.1 (Source of attacks)\n")
+    info("   attacker2 : 10.0.0.2 (Second attacker)\n")
+    info("   normal    : 10.0.0.3 (Normal traffic)\n")
+    info("   victim    : 10.0.0.100 (Target)\n")
+    
+    info("\n🔥 Attack Commands:\n")
+    info("   SYN flood:   attacker1 hping3 -S --flood victim\n")
+    info("   ICMP flood:  attacker2 ping victim -f\n")
+    info("   UDP flood:   attacker1 hping3 --udp --flood victim\n")
+    
+    info("\n📊 Monitor Commands (in another terminal):\n")
+    info("   BMv2 CLI:    simple_switch_CLI --thrift-port 9090\n")
+    info("   Table dump:  table_dump ddos_table\n")
+    info("   Add rule:    table_add ddos_table drop 10.0.0.1\n")
+    
+    info("\n🔧 Controller Integration (coming soon):\n")
+    info("   ONOS will connect via gRPC port 50001\n")
+    info("   ML controller will receive packet-in\n")
+    
+    info("\n" + "-"*60 + "\n")
+    
+    net.start()
+    CLI(net)
+    net.stop()
+
+if __name__ == '__main__':
+    setLogLevel('info')
+    run()
