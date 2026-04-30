@@ -1,0 +1,11 @@
+
+# Runtime logs
+logs/
+*.log
+
+# Runtime telemetry
+dataset/traffic_log.csv
+
+# Local backup files
+controller/*_old.py
+controller/*_backup.py
