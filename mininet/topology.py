@@ -13,7 +13,7 @@ class BMv2Switch(Switch):
 
     def __init__(self, name, **kwargs):
         Switch.__init__(self, name, **kwargs)
-        self.sw_path = kwargs.get("sw_path", "/usr/local/bin/simple_switch")
+        self.sw_path = kwargs.get("sw_path", "/usr/local/bin/simple_switch_grpc")
         self.json_path = kwargs.get("json_path", "p4/ddos_detect.json")
         self.thrift_port = kwargs.get("thrift_port", 9090)
         self.device_id = kwargs.get("device_id", 0)
@@ -22,16 +22,18 @@ class BMv2Switch(Switch):
         info(f"*** Starting BMv2 switch {self.name}\n")
 
         cmd = (
-            f"{self.sw_path} "
-            f"--device-id {self.device_id} "
-            f"--thrift-port {self.thrift_port} "
-            f"-i 1@{self.name}-eth1 "
-            f"-i 2@{self.name}-eth2 "
-            f"-i 3@{self.name}-eth3 "
-            f"-i 4@{self.name}-eth4 "
-            f"--log-console "
-            f"{self.json_path} "
-            f"> /tmp/{self.name}.log 2>&1 &"
+	    f"{self.sw_path} "
+	    f"--device-id {self.device_id} "
+	    f"--thrift-port {self.thrift_port} "
+	    f"-i 1@{self.name}-eth1 "
+	    f"-i 2@{self.name}-eth2 "
+	    f"-i 3@{self.name}-eth3 "
+	    f"-i 4@{self.name}-eth4 "
+	    f"--log-console "
+	    f"{self.json_path} "
+	    f"-- "
+	    f"--grpc-server-addr 0.0.0.0:50051 "
+	    f"> /tmp/{self.name}.log 2>&1 &"
         )
 
         self.cmd(cmd)
@@ -107,7 +109,7 @@ def run():
     net = Mininet(topo=topo, controller=None, autoSetMacs=False)
 
     net.start()
-    configure_tables()
+#    configure_tables()
 
     # Add static ARP entries so hosts do not need ARP broadcast
     hosts = {

@@ -53,42 +53,6 @@ tables {
   }
   size: 1024
 }
-tables {
-  preamble {
-    id: 39396258
-    name: "MyIngress.syn_table"
-    alias: "syn_table"
-  }
-  match_fields {
-    id: 1
-    name: "h.ipv4.src_addr"
-    bitwidth: 32
-    match_type: EXACT
-  }
-  match_fields {
-    id: 2
-    name: "h.tcp.flags"
-    bitwidth: 8
-    match_type: EXACT
-  }
-  action_refs {
-    id: 25652968
-  }
-  action_refs {
-    id: 22952082
-  }
-  action_refs {
-    id: 29683729
-  }
-  initial_default_action {
-    action_id: 29683729
-    arguments {
-      param_id: 1
-      value: "\000\000"
-    }
-  }
-  size: 1024
-}
 actions {
   preamble {
     id: 25652968
@@ -122,5 +86,84 @@ actions {
     alias: "allow"
   }
 }
+actions {
+  preamble {
+    id: 17828159
+    name: "MyIngress.count_syn"
+    alias: "count_syn"
+  }
+}
+registers {
+  preamble {
+    id: 369400004
+    name: "MyIngress.syn_counter"
+    alias: "syn_counter"
+  }
+  type_spec {
+    bitstring {
+      bit {
+        bitwidth: 32
+      }
+    }
+  }
+  size: 1024
+}
+digests {
+  preamble {
+    id: 401879526
+    name: "ddos_digest_t"
+    alias: "ddos_digest_t"
+  }
+  type_spec {
+    struct {
+      name: "ddos_digest_t"
+    }
+  }
+}
 type_info {
+  structs {
+    key: "ddos_digest_t"
+    value {
+      members {
+        name: "src_ip"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 32
+            }
+          }
+        }
+      }
+      members {
+        name: "dst_ip"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 32
+            }
+          }
+        }
+      }
+      members {
+        name: "syn_count"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 32
+            }
+          }
+        }
+      }
+      members {
+        name: "ingress_port"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 9
+            }
+          }
+        }
+      }
+    }
+  }
 }
