@@ -122,6 +122,24 @@ def log_event(
 
     logging.info(msg)
     print(msg)
+ 
+def reset_syn_register(index):
+    cmd = (
+        f'echo "register_write MyIngress.syn_counter {index} 0" '
+        f'| simple_switch_CLI --thrift-port {THRIFT_PORT}'
+    )
+
+    try:
+        subprocess.check_output(
+            cmd,
+            shell=True,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        )
+    except Exception as e:
+        logging.warning(f"Failed to reset syn register index={index}: {repr(e)}")
+   
 
 def ip_to_register_index(ip):
     """
@@ -161,23 +179,21 @@ def read_syn_register(index):
 
     return None
 
-
 def normal_baseline_logger():
     """
     Phase 1 normal telemetry.
 
     Reads real SYN counter values from the P4 data plane.
-    If count is below threshold, it is logged as normal/allowed.
+    The counter is reset after each reading, so syn_count represents
+    SYN packets within one monitoring window, not lifetime total.
     """
     while True:
+        time.sleep(NORMAL_BASELINE_INTERVAL)
+
         for name, host in HOSTS.items():
             # Skip lab server/destination-only host.
-            if name == "victim":
-                continue
-
-            # If already blocked, don't log it as normal.
-            if host["ip"] in blocked:
-                continue
+#            if name == "victim":
+#                continue
 
             index = ip_to_register_index(host["ip"])
             syn_count = read_syn_register(index)
@@ -185,7 +201,13 @@ def normal_baseline_logger():
             if syn_count is None:
                 continue
 
-            if syn_count < SYN_THRESHOLD:
+            if host["ip"] in blocked:
+                event_type = "blocked_counter"
+                action = "drop"
+                severity = "HIGH"
+                label = "attack"
+                blocked_status = "blocked"
+            elif syn_count < SYN_THRESHOLD:
                 event_type = "baseline_counter"
                 action = "allow"
                 severity = "LOW"
@@ -212,7 +234,9 @@ def normal_baseline_logger():
                 blocked_status=blocked_status,
             )
 
-        time.sleep(NORMAL_BASELINE_INTERVAL)
+            # Reset EACH host counter after logging.
+            reset_syn_register(index)
+
 
 def bytes_to_int(value):
     if isinstance(value, int):
