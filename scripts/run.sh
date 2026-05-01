@@ -2,6 +2,7 @@
 set -e
 
 cd ~/testing/p4/ddos
+TOPO_CONFIG_FILE=${1:-config/topology_single.json}
 
 clear
 echo "========================================"
@@ -20,7 +21,11 @@ echo "[2/4] Compiling P4 program..."
 
 echo ""
 echo "[3/4] Starting Mininet + BMv2 switch..."
-sudo python3 mininet/topology.py
+#sudo python3 mininet/topology.py
+#sudo env TOPO_CONFIG="$TOPO_CONFIG_FILE" python3 mininet/topology.py
+sudo env TOPO_CONFIG=config/topology_3switch.json python3 mininet/topology.py
+
+
 
 echo ""
 echo "[4/4] Finished"
