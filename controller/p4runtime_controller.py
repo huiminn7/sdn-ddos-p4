@@ -73,6 +73,9 @@ def setup_files():
                 "src_ip",
                 "dst_ip",
                 "syn_count",
+                "ack_count",
+                "syn_ack_gap",
+                "ack_ratio",
                 "ingress_port",
                 "threshold",
                 "decision_source",
@@ -89,6 +92,9 @@ def log_event(
     src_ip="",
     dst_ip="",
     syn_count="",
+    ack_count="",
+    syn_ack_gap="",
+    ack_ratio="",
     ingress_port="",
     threshold="",
     decision_source="controller",
@@ -110,6 +116,9 @@ def log_event(
             src_ip,
             dst_ip,
             syn_count,
+            ack_count,
+            syn_ack_gap,
+            ack_ratio,
             ingress_port,
             threshold,
             decision_source,
@@ -122,50 +131,21 @@ def log_event(
 
     msg = (
         f"time={ts_readable}, event={event_type}, src_ip={src_ip}, dst_ip={dst_ip}, "
-        f"syn_count={syn_count}, ingress_port={ingress_port}, "
-        f"threshold={threshold}, decision_source={decision_source}, "
-        f"action={action}, severity={severity}, label={label}, "
-        f"blocked_status={blocked_status}"
+        f"syn_count={syn_count}, ack_count={ack_count}, "
+        f"syn_ack_gap={syn_ack_gap}, ack_ratio={ack_ratio}, "
+        f"ingress_port={ingress_port}, threshold={threshold}, "
+        f"decision_source={decision_source}, action={action}, "
+        f"severity={severity}, label={label}, blocked_status={blocked_status}, "
+        f"decision_reason={decision_reason}"
     )
-
+    
     logging.info(msg)
     print(msg)
  
-def reset_syn_register(index):
+
+def read_p4_register(register_name, index):
     cmd = (
-        f'echo "register_write MyIngress.syn_counter {index} 0" '
-        f'| simple_switch_CLI --thrift-port {THRIFT_PORT}'
-    )
-
-    try:
-        subprocess.check_output(
-            cmd,
-            shell=True,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=3,
-        )
-    except Exception as e:
-        logging.warning(f"Failed to reset syn register index={index}: {repr(e)}")
-   
-
-def ip_to_register_index(ip):
-    """
-    Must match P4 logic:
-    idx = h.ipv4.src_addr & 32w1023;
-    """
-    return int(ipaddress.IPv4Address(ip)) & (REG_SIZE - 1)
-
-
-def read_syn_register(index):
-    """
-    Phase 1 telemetry method:
-    Read BMv2 register using simple_switch_CLI.
-
-    Later, this can be replaced with P4Runtime-supported counter/register reading.
-    """
-    cmd = (
-        f'echo "register_read MyIngress.syn_counter {index}" '
+        f'echo "register_read MyIngress.{register_name} {index}" '
         f'| simple_switch_CLI --thrift-port {THRIFT_PORT}'
     )
 
@@ -179,15 +159,72 @@ def read_syn_register(index):
         )
 
         for line in output.splitlines():
-            if "MyIngress.syn_counter" in line and "=" in line:
+            if f"MyIngress.{register_name}" in line and "=" in line:
                 return int(line.split("=")[-1].strip())
 
     except Exception as e:
-        logging.warning(f"Failed to read syn register index={index}: {repr(e)}")
+        logging.warning(
+            f"Failed to read register={register_name}, index={index}: {repr(e)}"
+        )
 
     return None
 
-def agent_decide(event_type, src_ip="", syn_count=0):
+
+def reset_p4_register(register_name, index):
+    cmd = (
+        f'echo "register_write MyIngress.{register_name} {index} 0" '
+        f'| simple_switch_CLI --thrift-port {THRIFT_PORT}'
+    )
+
+    try:
+        subprocess.check_output(
+            cmd,
+            shell=True,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        )
+    except Exception as e:
+        logging.warning(
+            f"Failed to reset register={register_name}, index={index}: {repr(e)}"
+        )
+
+
+def read_syn_register(index):
+    return read_p4_register("syn_counter", index)
+
+
+def read_ack_register(index):
+    return read_p4_register("ack_counter", index)
+
+
+def reset_syn_register(index):
+    reset_p4_register("syn_counter", index)
+
+
+def reset_ack_register(index):
+    reset_p4_register("ack_counter", index)
+
+
+def ip_to_register_index(ip):
+    """
+    Must match P4 logic:
+    idx = h.ipv4.src_addr & 32w1023;
+    """
+    return int(ipaddress.IPv4Address(ip)) & (REG_SIZE - 1)
+
+
+
+
+def agent_decide(
+    event_type,
+    src_ip="",
+    dst_ip="unknown",
+    syn_count=0,
+    ack_count=0,
+    ingress_port="",
+    decision_source="agent_rule_based"
+):
     """
     Agentic AI v0: rule-based decision agent.
 
@@ -211,6 +248,14 @@ def agent_decide(event_type, src_ip="", syn_count=0):
     except Exception:
         count = 0
 
+    try:
+        ack = int(ack_count)
+    except Exception:
+        ack = 0
+
+    gap = max(count - ack, 0)
+    ack_ratio = ack / count if count > 0 else 1
+
     if src_ip in blocked:
         return {
             "action": "skip_install",
@@ -226,26 +271,34 @@ def agent_decide(event_type, src_ip="", syn_count=0):
             "severity": "HIGH",
             "label": "attack",
             "blocked_status": "pending",
-            "reason": "p4_digest_threshold_triggered",
+            "reason": "p4_digest_syn_high_ack_low",
         }
 
-    if count >= SYN_THRESHOLD:
+    if count >= SYN_THRESHOLD and ack <= 5:
+        return {
+            "action": "drop",
+            "severity": "HIGH",
+            "label": "attack",
+            "blocked_status": "pending",
+            "reason": "syn_high_ack_low",
+        }
+
+    if count >= SYN_THRESHOLD and ack > 5:
         return {
             "action": "monitor",
             "severity": "MEDIUM",
             "label": "suspicious",
             "blocked_status": "not_blocked",
-            "reason": "register_count_reached_threshold",
+            "reason": "syn_high_but_ack_present",
         }
 
     return {
-        "action": "allow",
-        "severity": "LOW",
-        "label": "normal",
-        "blocked_status": "allowed",
-        "reason": "below_syn_threshold",
+      "action": "allow",
+      "severity": "LOW",
+      "label": "normal",
+      "blocked_status": "allowed",
+      "reason": "below_syn_threshold",
     }
-
 
 
 def normal_baseline_logger(p4info_helper, sw):
@@ -271,14 +324,22 @@ def normal_baseline_logger(p4info_helper, sw):
 
             index = ip_to_register_index(host["ip"])
             syn_count = read_syn_register(index)
+            ack_count = read_ack_register(index)
 
-            if syn_count is None:
+            if syn_count is None or ack_count is None:
                 continue
+
+            syn_ack_gap = max(syn_count - ack_count, 0)
+            ack_ratio = round(ack_count / syn_count, 4) if syn_count > 0 else 1.0
 
             decision = agent_decide(
                 event_type="baseline_counter",
                 src_ip=host["ip"],
+                dst_ip="unknown",
                 syn_count=syn_count,
+                ack_count=ack_count,
+                ingress_port=host["port"],
+                decision_source="p4_register_polling",
             )
 
             # Fallback mitigation:
@@ -298,6 +359,9 @@ def normal_baseline_logger(p4info_helper, sw):
                 src_ip=host["ip"],
                 dst_ip="unknown",
                 syn_count=syn_count,
+                ack_count=ack_count,
+                syn_ack_gap=syn_ack_gap,
+                ack_ratio=ack_ratio,
                 ingress_port=host["port"],
                 threshold=SYN_THRESHOLD,
                 decision_source="agent_rule_based",
@@ -313,12 +377,19 @@ def normal_baseline_logger(p4info_helper, sw):
                     p4info_helper,
                     sw,
                     host["ip"],
+                    dst_ip="unknown",
+                    syn_count=syn_count,
+                    ack_count=ack_count,
+                    syn_ack_gap=syn_ack_gap,
+                    ack_ratio=ack_ratio,
+                    ingress_port=host["port"],
                     decision_reason=decision["reason"],
                 )
 
             # Reset each host counter after logging.
             # This makes syn_count a window-based value, not lifetime total.
             reset_syn_register(index)
+            reset_ack_register(index)
 
 
 def bytes_to_int(value):
@@ -375,64 +446,36 @@ def install_forwarding_rules(p4info_helper, sw):
     )
 
 
-
-
-def install_drop_rule(p4info_helper, sw, ip, decision_reason="syn_threshold_exceeded"):
-    if ip in blocked:
-        blocked[ip]["last_attack_time"] = time.time()
-        log_event(
-            "drop_rule_exists",
-            src_ip=ip,
-            threshold=SYN_THRESHOLD,
-            decision_source="controller_policy",
-            action="skip_install",
-            severity="HIGH",
-            label="attack",
-            blocked_status="already_blocked",
-            decision_reason=decision_reason,
-        )
-        return
-
-    print(f"🚫 Installing DROP rule for {ip}")
-
-    write_table_entry(
-        p4info_helper,
-        sw,
-        table_name="MyIngress.ddos_table",
-        match_fields={"h.ipv4.src_addr": ip},
-        action_name="MyIngress.drop",
-        action_params={},
-    )
-
-    blocked[ip] = {
-        "installed_time": time.time(),
-        "last_attack_time": time.time(),
-    }
-
 def install_drop_rule(
     p4info_helper,
     sw,
     ip,
     dst_ip="unknown",
     syn_count="",
+    ack_count="",
+    syn_ack_gap="",
+    ack_ratio="",
     ingress_port="",
     decision_reason="syn_threshold_exceeded"
 ):
     if ip in blocked:
         blocked[ip]["last_attack_time"] = time.time()
         log_event(
-          "drop_rule_installed",
-          src_ip=ip,
-          dst_ip=dst_ip,
-          syn_count=syn_count,
-          ingress_port=ingress_port,
-          threshold=SYN_THRESHOLD,
-          decision_source="controller_policy",
-          action="drop",
-          severity="HIGH",
-          label="attack",
-          blocked_status="blocked",
-          decision_reason=decision_reason,
+            "drop_rule_exists",
+            src_ip=ip,
+            dst_ip=dst_ip,
+            syn_count=syn_count,
+            ack_count=ack_count,
+            syn_ack_gap=syn_ack_gap,
+            ack_ratio=ack_ratio,
+            ingress_port=ingress_port,
+            threshold=SYN_THRESHOLD,
+            decision_source="controller_policy",
+            action="skip_install",
+            severity="HIGH",
+            label="attack",
+            blocked_status="already_blocked",
+            decision_reason="source_already_blocked",
         )
         return
 
@@ -455,6 +498,12 @@ def install_drop_rule(
     log_event(
         "drop_rule_installed",
         src_ip=ip,
+        dst_ip=dst_ip,
+        syn_count=syn_count,
+        ack_count=ack_count,
+        syn_ack_gap=syn_ack_gap,
+        ack_ratio=ack_ratio,
+        ingress_port=ingress_port,
         threshold=SYN_THRESHOLD,
         decision_source="controller_policy",
         action="drop",
@@ -463,7 +512,6 @@ def install_drop_rule(
         blocked_status="blocked",
         decision_reason=decision_reason,
     )
-
 
 
 
@@ -519,15 +567,21 @@ def parse_ddos_digest(digest_data):
     src_ip_int = bytes_to_int(members[0].bitstring)
     dst_ip_int = bytes_to_int(members[1].bitstring)
     syn_count = bytes_to_int(members[2].bitstring)
-    ingress_port = bytes_to_int(members[3].bitstring)
+    ack_count = bytes_to_int(members[3].bitstring)
+    ingress_port = bytes_to_int(members[4].bitstring)
+
+    syn_ack_gap = max(syn_count - ack_count, 0)
+    ack_ratio = round(ack_count / syn_count, 4) if syn_count > 0 else 1.0
 
     return {
         "src_ip": int_to_ip(src_ip_int),
         "dst_ip": int_to_ip(dst_ip_int),
         "syn_count": syn_count,
+        "ack_count": ack_count,
+        "syn_ack_gap": syn_ack_gap,
+        "ack_ratio": ack_ratio,
         "ingress_port": ingress_port,
     }
-
 
 
 def monitor_digest(p4info_helper, sw):
@@ -547,38 +601,51 @@ def monitor_digest(p4info_helper, sw):
                 dst_ip = d["dst_ip"]
                 syn_count = d["syn_count"]
                 ingress_port = d["ingress_port"]
+                ack_count = d["ack_count"]
+                syn_ack_gap = d["syn_ack_gap"]
+                ack_ratio = d["ack_ratio"]
                 
                 decision = agent_decide(
-                  event_type="digest_received",
-                  src_ip=src_ip,
-                  syn_count=syn_count,
+                    event_type="digest_received",
+                    src_ip=src_ip,
+                    dst_ip=dst_ip,
+                    syn_count=syn_count,
+                    ack_count=ack_count,
+                    ingress_port=ingress_port,
+                    decision_source="p4_data_plane",
                 )
                 
                 log_event(
-                  "digest_received",
-                  src_ip=src_ip,
-                  dst_ip=dst_ip,
-                  syn_count=syn_count,
-                  ingress_port=ingress_port,
-                  threshold=SYN_THRESHOLD,
-                  decision_source="agent_rule_based",
-                  action=decision["action"],
-                  severity=decision["severity"],
-                  label=decision["label"],
-                  blocked_status=decision["blocked_status"],
-                  decision_reason=decision["reason"],
+                    "digest_received",
+                    src_ip=src_ip,
+                    dst_ip=dst_ip,
+                    syn_count=syn_count,
+                    ack_count=ack_count,
+                    syn_ack_gap=syn_ack_gap,
+                    ack_ratio=ack_ratio,
+                    ingress_port=ingress_port,
+                    threshold=SYN_THRESHOLD,
+                    decision_source="agent_rule_based",
+                    action=decision["action"],
+                    severity=decision["severity"],
+                    label=decision["label"],
+                    blocked_status=decision["blocked_status"],
+                    decision_reason=decision["reason"],
                 )
 
                 if decision["action"] == "drop":
                   install_drop_rule(
-                     p4info_helper,
-                     sw,
-                     src_ip,
-                     dst_ip=dst_ip,
-                     syn_count=syn_count,
-                     ingress_port=ingress_port,
-                     decision_reason=decision["reason"],
-                  )
+                    p4info_helper,
+                    sw,
+                    src_ip,
+                    dst_ip=dst_ip,
+                    syn_count=syn_count,
+                    ack_count=ack_count,
+                    syn_ack_gap=syn_ack_gap,
+                    ack_ratio=ack_ratio,
+                    ingress_port=ingress_port,
+                    decision_reason=decision["reason"],
+                )
                 else:
                   log_event(
                     "agent_no_drop_action",

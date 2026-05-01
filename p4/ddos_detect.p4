@@ -3,6 +3,7 @@
 
 #define CPU_PORT 255
 #define SYN_THRESHOLD 30
+#define ACK_MIN_THRESHOLD 5
 #define REG_SIZE 1024
 
 header ethernet_t {
@@ -55,6 +56,7 @@ header cpu_out_header_t {
 
 struct metadata {
     bit<32> syn_count;
+    bit<32> ack_count;
     bit<1>  trigger_digest;
 }
 
@@ -71,6 +73,7 @@ struct ddos_digest_t {
     bit<32> src_ip;
     bit<32> dst_ip;
     bit<32> syn_count;
+    bit<32> ack_count;
     bit<9>  ingress_port;
 }
 
@@ -163,6 +166,7 @@ parser MyParser(packet_in b, out headers h, inout metadata m, inout standard_met
 control MyIngress(inout headers h, inout metadata m, inout standard_metadata_t sm) {
 
     register<bit<32>>(REG_SIZE) syn_counter;
+    register<bit<32>>(REG_SIZE) ack_counter;
 
     action drop() {
         mark_to_drop(sm);
@@ -179,26 +183,41 @@ control MyIngress(inout headers h, inout metadata m, inout standard_metadata_t s
     action allow() {
     }
 
-    action count_syn() {
+        action count_syn() {
         bit<32> idx;
-        bit<32> old_count;
-        bit<32> new_count;
+        bit<32> old_syn_count;
+        bit<32> new_syn_count;
+        bit<32> current_ack_count;
 
         idx = h.ipv4.src_addr & 32w1023;
 
-        syn_counter.read(old_count, idx);
-        
-        // Reset check: if it's very high, maybe reset or stop sending
-        if (old_count < 100) { 
-            new_count = old_count + 1;
-            syn_counter.write(idx, new_count);
-            m.syn_count = new_count;
+        syn_counter.read(old_syn_count, idx);
+        new_syn_count = old_syn_count + 1;
+        syn_counter.write(idx, new_syn_count);
 
-            // ONLY trigger when it HITS the threshold, not every time after
-            if (new_count == SYN_THRESHOLD) {
-                m.trigger_digest = 1;
-            }
+        ack_counter.read(current_ack_count, idx);
+
+        m.syn_count = new_syn_count;
+        m.ack_count = current_ack_count;
+
+        // Trigger only when SYN is high but ACK completion is still low.
+        if (new_syn_count >= SYN_THRESHOLD && current_ack_count <= ACK_MIN_THRESHOLD) {
+            m.trigger_digest = 1;
         }
+    }
+
+    action count_ack() {
+        bit<32> idx;
+        bit<32> old_ack_count;
+        bit<32> new_ack_count;
+
+        idx = h.ipv4.src_addr & 32w1023;
+
+        ack_counter.read(old_ack_count, idx);
+        new_ack_count = old_ack_count + 1;
+        ack_counter.write(idx, new_ack_count);
+
+        m.ack_count = new_ack_count;
     }
 
     table mac_table {
@@ -235,12 +254,21 @@ control MyIngress(inout headers h, inout metadata m, inout standard_metadata_t s
 
         m.trigger_digest = 0;
         m.syn_count = 0;
+        m.ack_count = 0;
 
         mac_table.apply();
 
-        if (h.ipv4.isValid() && h.tcp.isValid()) {
+                if (h.ipv4.isValid() && h.tcp.isValid()) {
+            // Pure SYN: SYN=1, ACK=0
+            // Count only client-side SYN, not server SYN-ACK.
             if (((h.tcp.flags & 8w2) == 8w2) && ((h.tcp.flags & 8w16) == 8w0)) {
                 count_syn();
+            }
+
+            // Pure ACK: ACK=1, SYN=0
+            // Approximation of completed TCP handshake/client ACK.
+            if (((h.tcp.flags & 8w16) == 8w16) && ((h.tcp.flags & 8w2) == 8w0)) {
+                count_ack();
             }
         }
 
@@ -253,6 +281,7 @@ control MyIngress(inout headers h, inout metadata m, inout standard_metadata_t s
             d.src_ip = h.ipv4.src_addr;
             d.dst_ip = h.ipv4.dst_addr;
             d.syn_count = m.syn_count;
+            d.ack_count = m.ack_count;
             d.ingress_port = sm.ingress_port;
             digest(1, d);
         }

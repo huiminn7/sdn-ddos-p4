@@ -1,0 +1,47 @@
+{
+  "p4": {
+    "json_path": "p4/ddos_detect.json"
+  },
+  "switches": {
+    "s1": {
+      "device_id": 0,
+      "thrift_port": 9090,
+      "grpc_port": 50051
+    }
+  },
+  "hosts": {
+    "attacker1": {
+      "ip": "10.0.0.1/24",
+      "ip_plain": "10.0.0.1",
+      "mac": "00:00:00:00:00:01",
+      "switch": "s1",
+      "host_port": 1,
+      "switch_port": 1
+    },
+    "attacker2": {
+      "ip": "10.0.0.2/24",
+      "ip_plain": "10.0.0.2",
+      "mac": "00:00:00:00:00:02",
+      "switch": "s1",
+      "host_port": 1,
+      "switch_port": 2
+    },
+    "normal": {
+      "ip": "10.0.0.3/24",
+      "ip_plain": "10.0.0.3",
+      "mac": "00:00:00:00:00:03",
+      "switch": "s1",
+      "host_port": 1,
+      "switch_port": 3
+    },
+    "victim": {
+      "ip": "10.0.0.100/24",
+      "ip_plain": "10.0.0.100",
+      "mac": "00:00:00:00:00:04",
+      "switch": "s1",
+      "host_port": 1,
+      "switch_port": 4
+    }
+  },
+  "links": []
+}
