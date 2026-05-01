@@ -1703,19 +1703,29 @@
             "filename" : "p4/ddos_detect.p4",
             "line" : 242,
             "column" : 16,
-            "source_fragment" : "(h.tcp.flags & 8w2) == 8w2"
+            "source_fragment" : "((h.tcp.flags & 8w2) == 8w2) && ((h.tcp.flags & 8w16) == 8w0)"
           },
           "expression" : {
             "type" : "expression",
             "value" : {
-              "op" : "==",
+              "op" : "and",
               "left" : {
                 "type" : "expression",
                 "value" : {
-                  "op" : "&",
+                  "op" : "==",
                   "left" : {
-                    "type" : "field",
-                    "value" : ["tcp", "flags"]
+                    "type" : "expression",
+                    "value" : {
+                      "op" : "&",
+                      "left" : {
+                        "type" : "field",
+                        "value" : ["tcp", "flags"]
+                      },
+                      "right" : {
+                        "type" : "hexstr",
+                        "value" : "0x02"
+                      }
+                    }
                   },
                   "right" : {
                     "type" : "hexstr",
@@ -1724,8 +1734,28 @@
                 }
               },
               "right" : {
-                "type" : "hexstr",
-                "value" : "0x02"
+                "type" : "expression",
+                "value" : {
+                  "op" : "==",
+                  "left" : {
+                    "type" : "expression",
+                    "value" : {
+                      "op" : "&",
+                      "left" : {
+                        "type" : "field",
+                        "value" : ["tcp", "flags"]
+                      },
+                      "right" : {
+                        "type" : "hexstr",
+                        "value" : "0x10"
+                      }
+                    }
+                  },
+                  "right" : {
+                    "type" : "hexstr",
+                    "value" : "0x00"
+                  }
+                }
               }
             }
           },

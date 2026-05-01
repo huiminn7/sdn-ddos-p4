@@ -239,7 +239,7 @@ control MyIngress(inout headers h, inout metadata m, inout standard_metadata_t s
         mac_table.apply();
 
         if (h.ipv4.isValid() && h.tcp.isValid()) {
-            if ((h.tcp.flags & 8w2) == 8w2) {
+            if (((h.tcp.flags & 8w2) == 8w2) && ((h.tcp.flags & 8w16) == 8w0)) {
                 count_syn();
             }
         }

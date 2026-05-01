@@ -5,35 +5,47 @@ from mininet.topo import Topo
 from mininet.node import Switch
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
+import json
 import time
+import os
+
+
+CONFIG_FILE = "config/topology_single.json"
 
 
 class BMv2Switch(Switch):
-    """BMv2 simple_switch for P4"""
+    """BMv2 simple_switch_grpc for P4Runtime"""
 
     def __init__(self, name, **kwargs):
         Switch.__init__(self, name, **kwargs)
         self.sw_path = kwargs.get("sw_path", "/usr/local/bin/simple_switch_grpc")
         self.json_path = kwargs.get("json_path", "p4/ddos_detect.json")
         self.thrift_port = kwargs.get("thrift_port", 9090)
+        self.grpc_port = kwargs.get("grpc_port", 50051)
         self.device_id = kwargs.get("device_id", 0)
 
     def start(self, controllers):
         info(f"*** Starting BMv2 switch {self.name}\n")
 
+        # Build interface arguments dynamically based on actual switch ports.
+        intf_args = []
+        for port_no, intf in sorted(self.intfs.items()):
+            if port_no == 0:
+                continue
+            intf_args.append(f"-i {port_no}@{intf.name}")
+
+        intf_args_str = " ".join(intf_args)
+
         cmd = (
-	    f"{self.sw_path} "
-	    f"--device-id {self.device_id} "
-	    f"--thrift-port {self.thrift_port} "
-	    f"-i 1@{self.name}-eth1 "
-	    f"-i 2@{self.name}-eth2 "
-	    f"-i 3@{self.name}-eth3 "
-	    f"-i 4@{self.name}-eth4 "
-	    f"--log-console "
-	    f"{self.json_path} "
-	    f"-- "
-	    f"--grpc-server-addr 0.0.0.0:50051 "
-	    f"> /tmp/{self.name}.log 2>&1 &"
+            f"{self.sw_path} "
+            f"--device-id {self.device_id} "
+            f"--thrift-port {self.thrift_port} "
+            f"{intf_args_str} "
+            f"--log-console "
+            f"{self.json_path} "
+            f"-- "
+            f"--grpc-server-addr 0.0.0.0:{self.grpc_port} "
+            f"> /tmp/{self.name}.log 2>&1 &"
         )
 
         self.cmd(cmd)
@@ -45,63 +57,51 @@ class BMv2Switch(Switch):
         Switch.stop(self)
 
 
-class DDoSTopo(Topo):
+def load_config():
+    with open(CONFIG_FILE, "r") as f:
+        return json.load(f)
+
+
+class ConfigTopo(Topo):
     def build(self):
-        s1 = self.addSwitch(
-            "s1",
-            cls=BMv2Switch,
-            json_path="p4/ddos_detect.json",
-            thrift_port=9090,
-            device_id=0
-        )
+        cfg = load_config()
+        json_path = cfg["p4"]["json_path"]
 
-        attacker1 = self.addHost(
-            "attacker1",
-            ip="10.0.0.1/24",
-            mac="00:00:00:00:00:01"
-        )
+        switches = {}
 
-        attacker2 = self.addHost(
-            "attacker2",
-            ip="10.0.0.2/24",
-            mac="00:00:00:00:00:02"
-        )
+        for sw_name, sw_cfg in cfg["switches"].items():
+            switches[sw_name] = self.addSwitch(
+                sw_name,
+                cls=BMv2Switch,
+                json_path=json_path,
+                thrift_port=sw_cfg["thrift_port"],
+                grpc_port=sw_cfg["grpc_port"],
+                device_id=sw_cfg["device_id"],
+            )
 
-        normal = self.addHost(
-            "normal",
-            ip="10.0.0.3/24",
-            mac="00:00:00:00:00:03"
-        )
+        hosts = {}
 
-        victim = self.addHost(
-            "victim",
-            ip="10.0.0.100/24",
-            mac="00:00:00:00:00:04"
-        )
+        for host_name, host_cfg in cfg["hosts"].items():
+            hosts[host_name] = self.addHost(
+                host_name,
+                ip=host_cfg["ip"],
+                mac=host_cfg["mac"],
+            )
 
-        self.addLink(attacker1, s1, port1=1, port2=1)
-        self.addLink(attacker2, s1, port1=1, port2=2)
-        self.addLink(normal, s1, port1=1, port2=3)
-        self.addLink(victim, s1, port1=1, port2=4)
+            self.addLink(
+                hosts[host_name],
+                switches[host_cfg["switch"]],
+                port1=host_cfg.get("host_port", 1),
+                port2=host_cfg["switch_port"],
+            )
 
-
-def configure_tables():
-    info("*** Configuring BMv2 MAC table\n")
-
-    cmds = """
-table_clear mac_table
-table_add mac_table forward 00:00:00:00:00:01 => 1
-table_add mac_table forward 00:00:00:00:00:02 => 2
-table_add mac_table forward 00:00:00:00:00:03 => 3
-table_add mac_table forward 00:00:00:00:00:04 => 4
-table_set_default mac_table forward 1
-"""
-
-    with open("/tmp/commands.txt", "w") as f:
-        f.write(cmds)
-
-    import os
-    os.system("simple_switch_CLI --thrift-port 9090 < /tmp/commands.txt")
+        for link in cfg.get("links", []):
+            self.addLink(
+                switches[link["node1"]],
+                switches[link["node2"]],
+                port1=link["port1"],
+                port2=link["port2"],
+            )
 
 
 def disable_offloading(net):
@@ -109,56 +109,71 @@ def disable_offloading(net):
 
     for host in net.hosts:
         intf = host.defaultIntf()
-
         cmd = f"ethtool -K {intf} tx off rx off tso off gso off gro off"
         result = host.cmd(cmd)
 
         print(f"  {host.name:10} {intf}: offloading disabled")
 
-        # Optional: print warnings only if needed
         if result.strip():
             print(result.strip())
 
+
+def configure_static_arp(net, cfg):
+    info("*** Configuring static ARP entries\n")
+
+    host_info = cfg["hosts"]
+
+    for hname, hcfg in host_info.items():
+        host = net.get(hname)
+
+        for other_name, other_cfg in host_info.items():
+            if hname == other_name:
+                continue
+
+            host.cmd(f"arp -s {other_cfg['ip_plain']} {other_cfg['mac']}")
+
+
+def print_summary(cfg):
+    print("\n" + "=" * 60)
+    print("Config-Driven P4 DDoS Test Network Ready")
+    print("=" * 60)
+
+    print("Switches:")
+    for sw_name, sw_cfg in cfg["switches"].items():
+        print(
+            f"  {sw_name}: device_id={sw_cfg['device_id']}, "
+            f"thrift={sw_cfg['thrift_port']}, grpc={sw_cfg['grpc_port']}"
+        )
+
+    print("\nHosts:")
+    for hname, hcfg in cfg["hosts"].items():
+        print(
+            f"  {hname:10}: {hcfg['ip_plain']:12} "
+            f"MAC {hcfg['mac']} connected to {hcfg['switch']}:{hcfg['switch_port']}"
+        )
+
+    print("\nTest:")
+    print("  pingall")
+    print("  normal ping victim")
+    print("  normal curl http://10.0.0.100:80")
+    print("  attacker1 hping3 -S -p 80 --flood 10.0.0.100")
+
+    print("\nCheck BMv2:")
+    print("  simple_switch_CLI --thrift-port 9090")
+    print("=" * 60 + "\n")
+
+
 def run():
-    topo = DDoSTopo()
+    cfg = load_config()
+
+    topo = ConfigTopo()
     net = Mininet(topo=topo, controller=None, autoSetMacs=False)
 
     net.start()
+
     disable_offloading(net)
-#    configure_tables()
-
-    # Add static ARP entries so hosts do not need ARP broadcast
-    hosts = {
-    	"attacker1": ("10.0.0.1", "00:00:00:00:00:01"),
-    	"attacker2": ("10.0.0.2", "00:00:00:00:00:02"),
-    	"normal":    ("10.0.0.3", "00:00:00:00:00:03"),
-    	"victim":    ("10.0.0.100", "00:00:00:00:00:04"),
-    }
-
-    for hname, (ip, mac) in hosts.items():
-    	host = net.get(hname)
-    	for other_name, (other_ip, other_mac) in hosts.items():
-    	    if hname != other_name:
-                host.cmd(f"arp -s {other_ip} {other_mac}")
-
-    print("\n" + "=" * 55)
-    print("DDoS Test Network Ready with BMv2 P4 Switch")
-    print("=" * 55)
-    print("Hosts:")
-    print("  attacker1 : 10.0.0.1     MAC 00:00:00:00:00:01")
-    print("  attacker2 : 10.0.0.2     MAC 00:00:00:00:00:02")
-    print("  normal    : 10.0.0.3     MAC 00:00:00:00:00:03")
-    print("  victim    : 10.0.0.100   MAC 00:00:00:00:00:04")
-    print("")
-    print("Test:")
-    print("  pingall")
-    print("  normal ping victim")
-    print("  attacker1 ping victim")
-    print("")
-    print("Check BMv2 in another terminal:")
-    print("  ps aux | grep simple_switch")
-    print("  simple_switch_CLI --thrift-port 9090")
-    print("=" * 55 + "\n")
+    configure_static_arp(net, cfg)
+    print_summary(cfg)
 
     CLI(net)
     net.stop()
@@ -167,4 +182,3 @@ def run():
 if __name__ == "__main__":
     setLogLevel("info")
     run()
-
