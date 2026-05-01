@@ -39,6 +39,10 @@ header tcp_t {
     bit<16> urgent_ptr;
 }
 
+header tcp_options_t {
+    varbit<320> options;
+}
+
 header cpu_in_header_t {
     bit<9> ingress_port;
     bit<7> _pad;
@@ -58,6 +62,7 @@ struct headers {
     ethernet_t        ethernet;
     ipv4_t            ipv4;
     tcp_t             tcp;
+    tcp_options_t     tcp_options;
     cpu_in_header_t   cpu_in;
     cpu_out_header_t  cpu_out;
 }
@@ -88,6 +93,69 @@ parser MyParser(packet_in b, out headers h, inout metadata m, inout standard_met
 
     state parse_tcp {
         b.extract(h.tcp);
+        transition select(h.tcp.data_offset) {
+            5: accept;                 // 20-byte TCP header, no options
+            6: parse_tcp_options_32;    // 4 bytes options
+            7: parse_tcp_options_64;    // 8 bytes options
+            8: parse_tcp_options_96;    // 12 bytes options
+            9: parse_tcp_options_128;   // 16 bytes options
+            10: parse_tcp_options_160;  // 20 bytes options
+            11: parse_tcp_options_192;  // 24 bytes options
+            12: parse_tcp_options_224;  // 28 bytes options
+            13: parse_tcp_options_256;  // 32 bytes options
+            14: parse_tcp_options_288;  // 36 bytes options
+            15: parse_tcp_options_320;  // 40 bytes options
+            default: accept;
+        }
+    }
+
+    state parse_tcp_options_32 {
+        b.extract(h.tcp_options, 32w32);
+        transition accept;
+    }
+
+    state parse_tcp_options_64 {
+        b.extract(h.tcp_options, 32w64);
+        transition accept;
+    }
+
+    state parse_tcp_options_96 {
+        b.extract(h.tcp_options, 32w96);
+        transition accept;
+    }
+
+    state parse_tcp_options_128 {
+        b.extract(h.tcp_options, 32w128);
+        transition accept;
+    }
+
+    state parse_tcp_options_160 {
+        b.extract(h.tcp_options, 32w160);
+        transition accept;
+    }
+
+    state parse_tcp_options_192 {
+        b.extract(h.tcp_options, 32w192);
+        transition accept;
+    }
+
+    state parse_tcp_options_224 {
+        b.extract(h.tcp_options, 32w224);
+        transition accept;
+    }
+
+    state parse_tcp_options_256 {
+        b.extract(h.tcp_options, 32w256);
+        transition accept;
+    }
+
+    state parse_tcp_options_288 {
+        b.extract(h.tcp_options, 32w288);
+        transition accept;
+    }
+
+    state parse_tcp_options_320 {
+        b.extract(h.tcp_options, 32w320);
         transition accept;
     }
 }
@@ -205,6 +273,7 @@ control MyDeparser(packet_out b, in headers h) {
         b.emit(h.ethernet);
         b.emit(h.ipv4);
         b.emit(h.tcp);
+        b.emit(h.tcp_options);
         b.emit(h.cpu_in);
         b.emit(h.cpu_out);
     }

@@ -14,6 +14,8 @@ from p4runtime_lib.switch import ShutdownAllSwitchConnections
 import p4runtime_lib.bmv2 as bmv2
 import p4runtime_lib.helper as helper
 from p4.v1 import p4runtime_pb2
+from datetime import datetime
+
 
 BASE_DIR = "/home/huimin/testing/p4/ddos"
 
@@ -66,6 +68,7 @@ def setup_files():
             writer = csv.writer(f)
             writer.writerow([
                 "timestamp",
+                "timestamp_readable",
                 "event_type",
                 "src_ip",
                 "dst_ip",
@@ -77,6 +80,7 @@ def setup_files():
                 "severity",
                 "label",
                 "blocked_status",
+                "decision_reason",
             ])
 
 
@@ -91,14 +95,17 @@ def log_event(
     action="",
     severity="",
     label="",
-    blocked_status=""
+    blocked_status="",
+    decision_reason=""
 ):
     ts = time.time()
+    ts_readable = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             ts,
+            ts_readable,
             event_type,
             src_ip,
             dst_ip,
@@ -110,10 +117,11 @@ def log_event(
             severity,
             label,
             blocked_status,
+            decision_reason,
         ])
 
     msg = (
-        f"event={event_type}, src_ip={src_ip}, dst_ip={dst_ip}, "
+        f"time={ts_readable}, event={event_type}, src_ip={src_ip}, dst_ip={dst_ip}, "
         f"syn_count={syn_count}, ingress_port={ingress_port}, "
         f"threshold={threshold}, decision_source={decision_source}, "
         f"action={action}, severity={severity}, label={label}, "
@@ -179,20 +187,86 @@ def read_syn_register(index):
 
     return None
 
-def normal_baseline_logger():
+def agent_decide(event_type, src_ip="", syn_count=0):
     """
-    Phase 1 normal telemetry.
+    Agentic AI v0: rule-based decision agent.
+
+    Observe:
+        Receives telemetry from P4 register polling or digest event.
+
+    Analyze:
+        Compares SYN count with threshold and checks blocked state.
+
+    Plan:
+        Chooses allow / monitor / drop.
+
+    Act:
+        Controller executes the action by updating P4 table rules.
+
+    Later:
+        This function can be replaced by ML model inference.
+    """
+    try:
+        count = int(syn_count)
+    except Exception:
+        count = 0
+
+    if src_ip in blocked:
+        return {
+            "action": "skip_install",
+            "severity": "HIGH",
+            "label": "attack",
+            "blocked_status": "already_blocked",
+            "reason": "source_already_blocked",
+        }
+
+    if event_type == "digest_received":
+        return {
+            "action": "drop",
+            "severity": "HIGH",
+            "label": "attack",
+            "blocked_status": "pending",
+            "reason": "p4_digest_threshold_triggered",
+        }
+
+    if count >= SYN_THRESHOLD:
+        return {
+            "action": "monitor",
+            "severity": "MEDIUM",
+            "label": "suspicious",
+            "blocked_status": "not_blocked",
+            "reason": "register_count_reached_threshold",
+        }
+
+    return {
+        "action": "allow",
+        "severity": "LOW",
+        "label": "normal",
+        "blocked_status": "allowed",
+        "reason": "below_syn_threshold",
+    }
+
+
+
+def normal_baseline_logger(p4info_helper, sw):
+    """
+    Phase 1 normal + fallback attack telemetry.
 
     Reads real SYN counter values from the P4 data plane.
-    The counter is reset after each reading, so syn_count represents
-    SYN packets within one monitoring window, not lifetime total.
+    The counter is reset after each reading, so syn_count represents one monitoring window.
+
+    Primary path:
+        P4 digest triggers attack notification.
+
+    Fallback path:
+        If register polling observes syn_count >= threshold, controller also installs drop rule.
     """
     while True:
         time.sleep(NORMAL_BASELINE_INTERVAL)
 
         for name, host in HOSTS.items():
-            # Skip lab server/destination-only host.
-#            if name == "victim":
+            # Skip lab server / destination-only host.
+#            if name == "victim" or host["ip"] == HOSTS["victim"]["ip"]:
 #                continue
 
             index = ip_to_register_index(host["ip"])
@@ -201,40 +275,49 @@ def normal_baseline_logger():
             if syn_count is None:
                 continue
 
-            if host["ip"] in blocked:
-                event_type = "blocked_counter"
-                action = "drop"
-                severity = "HIGH"
-                label = "attack"
-                blocked_status = "blocked"
-            elif syn_count < SYN_THRESHOLD:
-                event_type = "baseline_counter"
-                action = "allow"
-                severity = "LOW"
-                label = "normal"
-                blocked_status = "allowed"
-            else:
-                event_type = "counter_threshold_reached"
-                action = "monitor"
-                severity = "MEDIUM"
-                label = "suspicious"
-                blocked_status = "not_blocked"
+            decision = agent_decide(
+                event_type="baseline_counter",
+                src_ip=host["ip"],
+                syn_count=syn_count,
+            )
+
+            # Fallback mitigation:
+            # If polling sees threshold reached and digest/drop has not happened yet,
+            # treat it as an attack and install a drop rule.
+            if syn_count >= SYN_THRESHOLD and host["ip"] not in blocked:
+                decision = {
+                    "action": "drop",
+                    "severity": "HIGH",
+                    "label": "attack",
+                    "blocked_status": "pending",
+                    "reason": "register_threshold_reached_fallback",
+                }
 
             log_event(
-                event_type,
+                "baseline_counter",
                 src_ip=host["ip"],
                 dst_ip="unknown",
                 syn_count=syn_count,
                 ingress_port=host["port"],
                 threshold=SYN_THRESHOLD,
-                decision_source="p4_register_polling",
-                action=action,
-                severity=severity,
-                label=label,
-                blocked_status=blocked_status,
+                decision_source="agent_rule_based",
+                action=decision["action"],
+                severity=decision["severity"],
+                label=decision["label"],
+                blocked_status=decision["blocked_status"],
+                decision_reason=decision["reason"],
             )
 
-            # Reset EACH host counter after logging.
+            if decision["action"] == "drop":
+                install_drop_rule(
+                    p4info_helper,
+                    sw,
+                    host["ip"],
+                    decision_reason=decision["reason"],
+                )
+
+            # Reset each host counter after logging.
+            # This makes syn_count a window-based value, not lifetime total.
             reset_syn_register(index)
 
 
@@ -292,7 +375,9 @@ def install_forwarding_rules(p4info_helper, sw):
     )
 
 
-def install_drop_rule(p4info_helper, sw, ip):
+
+
+def install_drop_rule(p4info_helper, sw, ip, decision_reason="syn_threshold_exceeded"):
     if ip in blocked:
         blocked[ip]["last_attack_time"] = time.time()
         log_event(
@@ -304,6 +389,50 @@ def install_drop_rule(p4info_helper, sw, ip):
             severity="HIGH",
             label="attack",
             blocked_status="already_blocked",
+            decision_reason=decision_reason,
+        )
+        return
+
+    print(f"🚫 Installing DROP rule for {ip}")
+
+    write_table_entry(
+        p4info_helper,
+        sw,
+        table_name="MyIngress.ddos_table",
+        match_fields={"h.ipv4.src_addr": ip},
+        action_name="MyIngress.drop",
+        action_params={},
+    )
+
+    blocked[ip] = {
+        "installed_time": time.time(),
+        "last_attack_time": time.time(),
+    }
+
+def install_drop_rule(
+    p4info_helper,
+    sw,
+    ip,
+    dst_ip="unknown",
+    syn_count="",
+    ingress_port="",
+    decision_reason="syn_threshold_exceeded"
+):
+    if ip in blocked:
+        blocked[ip]["last_attack_time"] = time.time()
+        log_event(
+          "drop_rule_installed",
+          src_ip=ip,
+          dst_ip=dst_ip,
+          syn_count=syn_count,
+          ingress_port=ingress_port,
+          threshold=SYN_THRESHOLD,
+          decision_source="controller_policy",
+          action="drop",
+          severity="HIGH",
+          label="attack",
+          blocked_status="blocked",
+          decision_reason=decision_reason,
         )
         return
 
@@ -332,7 +461,10 @@ def install_drop_rule(p4info_helper, sw, ip):
         severity="HIGH",
         label="attack",
         blocked_status="blocked",
+        decision_reason=decision_reason,
     )
+
+
 
 
 def get_digest_id(p4info_helper, digest_name="ddos_digest_t"):
@@ -397,6 +529,7 @@ def parse_ddos_digest(digest_data):
     }
 
 
+
 def monitor_digest(p4info_helper, sw):
     print("🚀 Waiting for P4 digest events...")
     print(f"Log file: {LOG_FILE}")
@@ -414,22 +547,53 @@ def monitor_digest(p4info_helper, sw):
                 dst_ip = d["dst_ip"]
                 syn_count = d["syn_count"]
                 ingress_port = d["ingress_port"]
-
+                
+                decision = agent_decide(
+                  event_type="digest_received",
+                  src_ip=src_ip,
+                  syn_count=syn_count,
+                )
+                
                 log_event(
-                    "digest_received",
+                  "digest_received",
+                  src_ip=src_ip,
+                  dst_ip=dst_ip,
+                  syn_count=syn_count,
+                  ingress_port=ingress_port,
+                  threshold=SYN_THRESHOLD,
+                  decision_source="agent_rule_based",
+                  action=decision["action"],
+                  severity=decision["severity"],
+                  label=decision["label"],
+                  blocked_status=decision["blocked_status"],
+                  decision_reason=decision["reason"],
+                )
+
+                if decision["action"] == "drop":
+                  install_drop_rule(
+                     p4info_helper,
+                     sw,
+                     src_ip,
+                     dst_ip=dst_ip,
+                     syn_count=syn_count,
+                     ingress_port=ingress_port,
+                     decision_reason=decision["reason"],
+                  )
+                else:
+                  log_event(
+                    "agent_no_drop_action",
                     src_ip=src_ip,
                     dst_ip=dst_ip,
                     syn_count=syn_count,
                     ingress_port=ingress_port,
                     threshold=SYN_THRESHOLD,
-                    decision_source="p4_data_plane",
-                    action="controller_notified",
-                    severity="HIGH",
-                    label="attack",
-                    blocked_status="pending",
-                )
-
-                install_drop_rule(p4info_helper, sw, src_ip)
+                    decision_source="agent_rule_based",
+                    action=decision["action"],
+                    severity=decision["severity"],
+                    label=decision["label"],
+                    blocked_status=decision["blocked_status"],
+                    decision_reason=decision["reason"],
+                  )
 
             send_digest_ack(sw, digest_list)
 
@@ -465,7 +629,11 @@ def main():
     enable_digest(p4info_helper, sw)
 
     # Start normal baseline logging in the background.
-    baseline_thread = threading.Thread(target=normal_baseline_logger, daemon=True)
+    baseline_thread = threading.Thread(
+      target=normal_baseline_logger,
+      args=(p4info_helper, sw),
+      daemon=True,
+    )
     baseline_thread.start()
 
     monitor_digest(p4info_helper, sw)

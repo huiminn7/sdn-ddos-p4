@@ -104,11 +104,27 @@ table_set_default mac_table forward 1
     os.system("simple_switch_CLI --thrift-port 9090 < /tmp/commands.txt")
 
 
+def disable_offloading(net):
+    info("*** Disabling checksum/segmentation offloading on host interfaces\n")
+
+    for host in net.hosts:
+        intf = host.defaultIntf()
+
+        cmd = f"ethtool -K {intf} tx off rx off tso off gso off gro off"
+        result = host.cmd(cmd)
+
+        print(f"  {host.name:10} {intf}: offloading disabled")
+
+        # Optional: print warnings only if needed
+        if result.strip():
+            print(result.strip())
+
 def run():
     topo = DDoSTopo()
     net = Mininet(topo=topo, controller=None, autoSetMacs=False)
 
     net.start()
+    disable_offloading(net)
 #    configure_tables()
 
     # Add static ARP entries so hosts do not need ARP broadcast
