@@ -10,8 +10,8 @@ import time
 import os
 
 
-CONFIG_FILE = "config/topology_single.json"
-
+#CONFIG_FILE = "config/topology_single.json"
+CONFIG_FILE = os.environ.get("TOPO_CONFIG", "config/topology_single.json")
 
 class BMv2Switch(Switch):
     """BMv2 simple_switch_grpc for P4Runtime"""
@@ -163,6 +163,33 @@ def print_summary(cfg):
     print("=" * 60 + "\n")
 
 
+def configure_static_forwarding(cfg):
+    info("*** Installing static MAC forwarding rules from config\n")
+
+    forwarding = cfg.get("forwarding", {})
+    switches = cfg["switches"]
+
+    for sw_name, mac_rules in forwarding.items():
+        thrift_port = switches[sw_name]["thrift_port"]
+
+        cmds = []
+        cmds.append("table_clear MyIngress.mac_table")
+
+        for mac, port in mac_rules.items():
+            cmds.append(f"table_add MyIngress.mac_table MyIngress.forward {mac} => {port}")
+
+        cmds.append("table_set_default MyIngress.mac_table MyIngress.drop")
+
+        cmd_file = f"/tmp/{sw_name}_commands.txt"
+
+        with open(cmd_file, "w") as f:
+            f.write("\n".join(cmds) + "\n")
+
+        os.system(f"simple_switch_CLI --thrift-port {thrift_port} < {cmd_file}")
+        print(f"  {sw_name}: installed {len(mac_rules)} MAC forwarding rules")
+
+
+
 def run():
     cfg = load_config()
 
@@ -173,6 +200,7 @@ def run():
 
     disable_offloading(net)
     configure_static_arp(net, cfg)
+    configure_static_forwarding(cfg)
     print_summary(cfg)
 
     CLI(net)
