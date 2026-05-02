@@ -200,7 +200,12 @@ def run():
 
     disable_offloading(net)
     configure_static_arp(net, cfg)
-    configure_static_forwarding(cfg)
+#    configure_static_forwarding(cfg)
+    if os.environ.get("STATIC_FORWARDING", "1") == "1":
+        configure_static_forwarding(cfg)
+    else:
+        info("*** Skipping simple_switch_CLI static forwarding; expecting P4Runtime controller\n")
+
     print_summary(cfg)
 
     CLI(net)
