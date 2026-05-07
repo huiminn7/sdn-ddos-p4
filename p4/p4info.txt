@@ -93,11 +93,33 @@ actions {
     alias: "count_syn"
   }
 }
+actions {
+  preamble {
+    id: 27515411
+    name: "MyIngress.count_ack"
+    alias: "count_ack"
+  }
+}
 registers {
   preamble {
     id: 369400004
     name: "MyIngress.syn_counter"
     alias: "syn_counter"
+  }
+  type_spec {
+    bitstring {
+      bit {
+        bitwidth: 32
+      }
+    }
+  }
+  size: 1024
+}
+registers {
+  preamble {
+    id: 376787479
+    name: "MyIngress.ack_counter"
+    alias: "ack_counter"
   }
   type_spec {
     bitstring {
@@ -146,6 +168,16 @@ type_info {
       }
       members {
         name: "syn_count"
+        type_spec {
+          bitstring {
+            bit {
+              bitwidth: 32
+            }
+          }
+        }
+      }
+      members {
+        name: "ack_count"
         type_spec {
           bitstring {
             bit {

@@ -5,6 +5,7 @@ from mininet.topo import Topo
 from mininet.node import Switch
 from mininet.cli import CLI
 from mininet.log import setLogLevel, info
+from traffic_scenario import run_traffic_scenario
 import json
 import time
 import os
@@ -201,10 +202,16 @@ def run():
     disable_offloading(net)
     configure_static_arp(net, cfg)
 #    configure_static_forwarding(cfg)
-    if os.environ.get("STATIC_FORWARDING", "1") == "1":
+    if os.environ.get("STATIC_FORWARDING", "0") == "1":
         configure_static_forwarding(cfg)
     else:
         info("*** Skipping simple_switch_CLI static forwarding; expecting P4Runtime controller\n")
+
+    if os.environ.get("RUN_TRAFFIC", "0") == "1":
+        input("\nStart controller now, wait until it is ready, then press ENTER to start traffic scenario...\n")
+        run_traffic_scenario(net)
+    else:
+        info("*** Skipping automated traffic scenario\n")
 
     print_summary(cfg)
 
